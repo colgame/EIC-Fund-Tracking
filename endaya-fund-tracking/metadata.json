@@ -1,0 +1,5 @@
+{
+  "name": "Endaya Fund Tracking",
+  "description": "A sophisticated fund management suite for Endaya featuring real-time tracking across multiple accounts (BDO, GCash, Cash) and automated diesel expense logging.",
+  "requestFramePermissions": []
+}
