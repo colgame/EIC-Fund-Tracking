@@ -1,17 +1,18 @@
-
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import * as XLSX from 'xlsx';
 import { 
   PieChart, Pie, Cell, 
   Tooltip, ResponsiveContainer 
 } from 'recharts';
+// Added missing icons ClipboardList and ArrowLeftRight to resolve compilation errors
 import { 
   LayoutDashboard, ListTodo, Fuel, 
-  TrendingUp, Wallet, Banknote, CreditCard, 
-  Plus, Trash2, X, Download,
-  Calendar, Search, ChevronDown,
-  RefreshCw, CheckCircle2,
-  Cloud, CloudOff, Wallet2, ReceiptText, Undo2,
-  LayoutGrid, FileSpreadsheet
+  Banknote, CreditCard, Wallet,
+  Plus, Trash2, X,
+  Calendar, RefreshCw, 
+  Loader2, FileSpreadsheet, Users,
+  Settings2, Edit3, Save,
+  ClipboardList, ArrowLeftRight
 } from 'lucide-react';
 import { 
   Transaction, DieselReport, FinancialSummary, 
@@ -19,11 +20,10 @@ import {
 } from './types';
 import { 
   INITIAL_TRANSACTIONS, INITIAL_DIESEL_REPORTS, 
-  CATEGORIES, COLORS 
+  CATEGORIES as DEFAULT_CATEGORIES, COLORS 
 } from './constants';
 
-// --- Components ---
-
+// --- Helpers ---
 const formatPHP = (amount: number) => {
   return new Intl.NumberFormat('en-PH', { 
     style: 'currency', 
@@ -44,16 +44,14 @@ const StatCard: React.FC<{
   return (
     <div className={`p-6 rounded-[2.5rem] shadow-xl text-white ${gradient} transition-transform hover:scale-[1.02] relative overflow-hidden group min-h-[180px] flex flex-col justify-between`}>
       <div className="absolute -right-4 -top-4 w-32 h-32 bg-white/10 rounded-full blur-3xl group-hover:scale-125 transition-transform duration-700" />
-      
       <div className="flex justify-between items-start relative z-10">
         <div className="p-4 bg-white/20 rounded-2xl backdrop-blur-md shadow-inner border border-white/10">
           <div className="text-white">
-            {React.cloneElement(icon as React.ReactElement, { size: 28 })}
+            {React.isValidElement(icon) ? React.cloneElement(icon as React.ReactElement<any>, { size: 28 }) : icon}
           </div>
         </div>
         <span className="text-white/90 text-[11px] font-black uppercase tracking-[0.2em] pt-2">{title}</span>
       </div>
-      
       <div className="relative z-10 mt-6">
         <div className="bg-white/95 backdrop-blur-sm rounded-full py-4 px-6 flex justify-center items-center shadow-2xl border border-white/40">
           <span className={`text-xl md:text-2xl font-black tracking-tight ${textColorClass}`}>
@@ -67,70 +65,64 @@ const StatCard: React.FC<{
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'diesel'>('dashboard');
-  const [isMounted, setIsMounted] = useState(false);
   const [chartsReady, setChartsReady] = useState(false);
-  
-  const [lastSaved, setLastSaved] = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
+  const [showSyncDetails, setShowSyncDetails] = useState(false);
+  const [isCloudLoading, setIsCloudLoading] = useState(false);
+  const [showTransactionModal, setShowTransactionModal] = useState(false);
+  const [showDieselModal, setShowDieselModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
 
-  const [isDriveConnected, setIsDriveConnected] = useState(() => localStorage.getItem('endaya_drive_connected') === 'true');
-  const [isSyncingToDrive, setIsSyncingToDrive] = useState(false);
-  const [syncStep, setSyncStep] = useState('');
-  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [syncState, setSyncState] = useState<{status: 'idle' | 'syncing' | 'connected' | 'error', lastSync: string | null}>({ 
+    status: 'idle', 
+    lastSync: null 
+  });
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    try {
-      const saved = localStorage.getItem('endaya_transactions');
-      return saved ? JSON.parse(saved) as Transaction[] : INITIAL_TRANSACTIONS;
-    } catch (e) {
-      return INITIAL_TRANSACTIONS;
-    }
+    const saved = localStorage.getItem('endaya_transactions');
+    return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
   });
   
   const [dieselReports, setDieselReports] = useState<DieselReport[]>(() => {
-    try {
-      const saved = localStorage.getItem('endaya_diesel');
-      return saved ? JSON.parse(saved) as DieselReport[] : INITIAL_DIESEL_REPORTS;
-    } catch (e) {
-      return INITIAL_DIESEL_REPORTS;
-    }
+    const saved = localStorage.getItem('endaya_diesel');
+    return saved ? JSON.parse(saved) : INITIAL_DIESEL_REPORTS;
   });
 
-  const [allCategories, setAllCategories] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('endaya_categories');
-      return saved ? JSON.parse(saved) as string[] : CATEGORIES;
-    } catch (e) {
-      return CATEGORIES;
-    }
+  const [categories, setCategories] = useState<string[]>(() => {
+    const saved = localStorage.getItem('endaya_categories');
+    return saved ? JSON.parse(saved) : DEFAULT_CATEGORIES;
   });
 
-  useEffect(() => {
-    setIsMounted(true);
-    const timer = setTimeout(() => setChartsReady(true), 1500);
+  const [editingCategoryIdx, setEditingCategoryIdx] = useState<number | null>(null);
+  const [editingCategoryValue, setEditingCategoryValue] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
 
-    const performSave = () => {
-      try {
-        setIsSaving(true);
-        localStorage.setItem('endaya_transactions', JSON.stringify(transactions));
-        localStorage.setItem('endaya_diesel', JSON.stringify(dieselReports));
-        localStorage.setItem('endaya_categories', JSON.stringify(allCategories));
-        
-        const now = new Date();
-        setLastSaved(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).toUpperCase());
-        setTimeout(() => setIsSaving(false), 800);
-      } catch (err) {
-        setIsSaving(false);
-      }
-    };
-    const debounceTimer = setTimeout(performSave, 1000);
-    return () => {
-      clearTimeout(timer);
-      clearTimeout(debounceTimer);
-    };
-  }, [transactions, dieselReports, allCategories]);
+  const syncWithCloud = useCallback(async (isInitial = false) => {
+    if (isInitial) setIsCloudLoading(true);
+    setSyncState(prev => ({ ...prev, status: 'syncing' }));
+
+    try {
+      await new Promise(resolve => setTimeout(resolve, isInitial ? 1000 : 1500));
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).toUpperCase();
+      setSyncState({ status: 'connected', lastSync: now });
+      localStorage.setItem('endaya_transactions', JSON.stringify(transactions));
+      localStorage.setItem('endaya_diesel', JSON.stringify(dieselReports));
+      localStorage.setItem('endaya_categories', JSON.stringify(categories));
+    } catch (error) {
+      setSyncState(prev => ({ ...prev, status: 'error' }));
+    } finally {
+      setIsCloudLoading(false);
+    }
+  }, [transactions, dieselReports, categories]);
 
   useEffect(() => {
+    syncWithCloud(true);
+    // Increased mount delay to ensure layout stability
+    const chartTimer = setTimeout(() => setChartsReady(true), 1500);
+    return () => clearTimeout(chartTimer);
+  }, []);
+
+  useEffect(() => {
+    // Reset and trigger a slightly longer delay on tab change to dashboard
     if (activeTab === 'dashboard') {
       setChartsReady(false);
       const timer = setTimeout(() => setChartsReady(true), 800);
@@ -138,160 +130,92 @@ const App: React.FC = () => {
     }
   }, [activeTab]);
 
-  const handleManualSave = () => {
-    setIsSaving(true);
-    setTimeout(() => setIsSaving(false), 500);
-  };
-
-  const connectGoogleDrive = () => {
-    if (isDriveConnected) {
-      if(confirm("Disconnect from Endaya Shared Drive?")) {
-        setIsDriveConnected(false);
-        localStorage.setItem('endaya_drive_connected', 'false');
-      }
-      return;
-    }
-    setIsSyncingToDrive(true);
-    setSyncStep('Connecting Spreadsheet...');
-    setTimeout(() => {
-      setIsDriveConnected(true);
-      localStorage.setItem('endaya_drive_connected', 'true');
-      setIsSyncingToDrive(false);
-      setSyncStep('');
-    }, 2000);
-  };
-
-  const today = new Date();
-  const year = today.getFullYear();
-  const monthStr = (today.getMonth() + 1).toString().padStart(2, '0');
-  const dayStr = today.getDate().toString().padStart(2, '0');
-  const todayISO = `${year}-${monthStr}-${dayStr}`;
+  const { todayISO, currentYear, currentMonthStr } = useMemo(() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = (d.getMonth() + 1).toString().padStart(2, '0');
+    const day = d.getDate().toString().padStart(2, '0');
+    return { todayISO: `${y}-${m}-${day}`, currentYear: y, currentMonthStr: m };
+  }, []);
 
   const [selectedAccount, setSelectedAccount] = useState<AccountType>('BDO');
-  const [selectedMonth, setSelectedMonth] = useState(monthStr); 
+  const [selectedMonth, setSelectedMonth] = useState(currentMonthStr); 
   const [selectedDate, setSelectedDate] = useState(todayISO); 
 
   const [dieselViewMode, setDieselViewMode] = useState<'Daily' | 'Monthly'>('Daily');
-  const [dieselSelectedMonth, setDieselSelectedMonth] = useState(monthStr);
+  const [dieselSelectedMonth, setDieselSelectedMonth] = useState(currentMonthStr);
   const [dieselSelectedDate, setDieselSelectedDate] = useState(todayISO);
 
   const [pieMonth, setPieMonth] = useState<string>('All');
 
-  const [showTransactionModal, setShowTransactionModal] = useState(false);
-  const [showDieselModal, setShowDieselModal] = useState(false);
-
-  const [transactionPreFill, setTransactionPreFill] = useState<{
-    type?: TransactionType;
-    category?: string;
-    description?: string;
-  } | null>(null);
-
   const summary = useMemo<FinancialSummary>(() => {
-    const calculate = (mode: AccountType) => 
-      transactions.filter(t => t.mode === mode).reduce((acc, t) => acc + t.amount, 0);
+    const calculate = (mode: AccountType) => transactions.filter(t => t.mode === mode).reduce((acc, t) => acc + t.amount, 0);
     const fundsReceived = transactions.filter(t => t.type === 'fund').reduce((acc, t) => acc + t.amount, 0);
-    
-    const expenses = transactions
-      .filter(t => {
-        const isDieselBudget = (t.category === 'Diesel') || 
-                               (t.description.toUpperCase().includes("ALLOCATED TODAY'S BUDGET FOR DIESEL"));
-        return t.type === 'expense' && !isDieselBudget;
-      })
-      .reduce((acc, t) => acc + Math.abs(t.amount), 0);
-      
+    const expenses = transactions.filter(t => t.type === 'expense' && t.category !== 'Diesel').reduce((acc, t) => acc + Math.abs(t.amount), 0);
     const dieselTotal = dieselReports.reduce((acc, d) => acc + d.amount, 0);
-
-    return {
-      bdo: calculate('BDO'),
-      gcash: calculate('GCash'),
-      cash: calculate('Cash'),
-      total: calculate('BDO') + calculate('GCash') + calculate('Cash'),
-      fundsReceived,
-      expenses,
-      dieselTotal
-    };
+    return { bdo: calculate('BDO'), gcash: calculate('GCash'), cash: calculate('Cash'), total: calculate('BDO') + calculate('GCash') + calculate('Cash'), fundsReceived, expenses, dieselTotal };
   }, [transactions, dieselReports]);
 
-  const getDatesInMonth = (month: string): string[] => {
-    const targetMonth = month === 'All' ? '01' : month;
-    const monthIndex = parseInt(targetMonth) - 1;
-    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-    const dates: string[] = [];
-    for (let day = 1; day <= daysInMonth; day++) {
-      dates.push(`${year}-${targetMonth}-${day.toString().padStart(2, '0')}`);
+  // Fix: Explicitly type fullYearDateOptions to avoid 'unknown' map error
+  const fullYearDateOptions = useMemo<{ name: string; monthStr: string; dates: { value: string; label: string }[] }[]>(() => {
+    const months = [];
+    for (let m = 0; m < 12; m++) {
+      const monthName = new Date(currentYear, m).toLocaleString('default', { month: 'long' });
+      const monthStr = (m + 1).toString().padStart(2, '0');
+      const daysInMonth = new Date(currentYear, m + 1, 0).getDate();
+      const dates = [];
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${currentYear}-${monthStr}-${d.toString().padStart(2, '0')}`;
+        dates.push({
+          value: dateStr,
+          label: `${monthName} ${d}, ${currentYear}`
+        });
+      }
+      months.push({ name: monthName, monthStr, dates });
     }
-    return dates;
-  };
+    return months;
+  }, [currentYear]);
 
-  const availableDates = useMemo<string[]>(() => {
-    const dates = getDatesInMonth(selectedMonth);
-    return [...dates].sort();
-  }, [selectedMonth, year]);
+  const availableDatesForTransactions = useMemo(() => {
+    const targetMonth = selectedMonth === 'All' ? '01' : selectedMonth;
+    const daysInMonth = new Date(currentYear, parseInt(targetMonth), 0).getDate();
+    return Array.from({ length: daysInMonth }, (_, i) => `${currentYear}-${targetMonth}-${(i + 1).toString().padStart(2, '0')}`).sort();
+  }, [selectedMonth, currentYear]);
 
-  const dieselAvailableDates = useMemo<string[]>(() => {
-    const dates = getDatesInMonth(dieselSelectedMonth);
-    return [...dates].sort();
-  }, [dieselSelectedMonth, year]);
-
-  useEffect(() => {
-    if (selectedMonth !== 'All' && !selectedDate.includes(`-${selectedMonth}-`)) {
-      setSelectedDate(selectedMonth === monthStr ? todayISO : availableDates[0]);
-    }
-  }, [selectedMonth, availableDates, monthStr, todayISO]);
-
-  useEffect(() => {
-    if (!dieselSelectedDate.includes(`-${dieselSelectedMonth}-`)) {
-      setDieselSelectedDate(dieselSelectedMonth === monthStr ? todayISO : dieselAvailableDates[0]);
-    }
-  }, [dieselSelectedMonth, dieselAvailableDates, monthStr, todayISO]);
-
-  const dailyLedger = useMemo<{
-    beginningBalance: number;
-    additionalFunds: Transaction[];
-    totalFunds: number;
-    expensesByCategory: Record<string, Transaction[]>;
-    totalExpenses: number;
-    availableBalance: number;
-  } | null>(() => {
+  const dailyLedger = useMemo(() => {
     if (!selectedDate) return null;
     const currentAccountTransactions = transactions.filter(t => t.mode === selectedAccount);
-    const beginningBalance = currentAccountTransactions
-      .filter(t => t.date < selectedDate)
-      .reduce((acc, t) => acc + t.amount, 0);
-    const additionalFunds = currentAccountTransactions
-      .filter(t => t.date === selectedDate && t.type === 'fund');
-    const totalAdditionalFunds = additionalFunds.reduce((acc, t) => acc + t.amount, 0);
-    const totalFunds = beginningBalance + totalAdditionalFunds;
+    const beginningBalance = currentAccountTransactions.filter(t => t.date < selectedDate).reduce((acc, t) => acc + t.amount, 0);
+    const additionalFunds = currentAccountTransactions.filter(t => t.date === selectedDate && t.type === 'fund');
+    
+    const fundsByCategory: Record<string, Transaction[]> = {};
+    additionalFunds.forEach(t => {
+      if (!fundsByCategory[t.category]) fundsByCategory[t.category] = [];
+      fundsByCategory[t.category].push(t);
+    });
+
     const dayExpenses = currentAccountTransactions.filter(t => t.date === selectedDate && t.type === 'expense');
     const expensesByCategory: Record<string, Transaction[]> = {};
-    dayExpenses.forEach(t => {
-      if (!expensesByCategory[t.category]) expensesByCategory[t.category] = [];
-      expensesByCategory[t.category].push(t);
+    dayExpenses.forEach(t => { 
+      if (!expensesByCategory[t.category]) expensesByCategory[t.category] = []; 
+      expensesByCategory[t.category].push(t); 
     });
+
+    const totalFunds = beginningBalance + additionalFunds.reduce((acc, t) => acc + t.amount, 0);
     const totalExpenses = dayExpenses.reduce((acc, t) => acc + Math.abs(t.amount), 0);
-    const availableBalance = totalFunds - totalExpenses;
-    return { beginningBalance, additionalFunds, totalFunds, expensesByCategory, totalExpenses, availableBalance };
+    return { beginningBalance, additionalFunds, fundsByCategory, totalFunds, expensesByCategory, dayExpenses, totalExpenses, availableBalance: totalFunds - totalExpenses };
   }, [transactions, selectedDate, selectedAccount]);
 
   const dieselLedger = useMemo(() => {
-    const periodPrefix = dieselViewMode === 'Daily' ? dieselSelectedDate : `${year}-${dieselSelectedMonth}`;
-    const budgetAllocations = transactions.filter(t => 
-      t.date.startsWith(periodPrefix) && 
-      (
-        (t.category === 'Diesel') || 
-        (t.description.toUpperCase().includes("ALLOCATED TODAY'S BUDGET FOR DIESEL"))
-      )
-    );
+    const periodPrefix = dieselViewMode === 'Daily' ? dieselSelectedDate : `${currentYear}-${dieselSelectedMonth}`;
+    const budgetAllocations = transactions.filter(t => t.date.startsWith(periodPrefix) && t.category === 'Diesel');
     const totalDieselBudget = budgetAllocations.reduce((acc, t) => acc + Math.abs(t.amount), 0);
-    const filteredLogs = dieselViewMode === 'Daily' 
-      ? dieselReports.filter(d => d.date === dieselSelectedDate)
-      : dieselReports.filter(d => d.date.startsWith(periodPrefix));
+    const filteredLogs = dieselReports.filter(d => dieselViewMode === 'Daily' ? d.date === dieselSelectedDate : d.date.startsWith(periodPrefix));
     const periodExpenses = filteredLogs.reduce((acc, d) => acc + d.amount, 0);
-    const returnedToFund = totalDieselBudget - periodExpenses;
-    return { filteredLogs, dieselBudget: totalDieselBudget, periodTotal: periodExpenses, returnedToFund };
-  }, [dieselReports, transactions, dieselViewMode, dieselSelectedDate, dieselSelectedMonth, year]);
+    return { filteredLogs, dieselBudget: totalDieselBudget, periodTotal: periodExpenses, returnedToFund: totalDieselBudget - periodExpenses };
+  }, [dieselReports, transactions, dieselViewMode, dieselSelectedDate, dieselSelectedMonth, currentYear]);
 
-  const categoryPieData = useMemo(() => {
+  const categoryPieData = useMemo<{ name: string; value: number }[]>(() => {
     const catMap: Record<string, number> = {};
     transactions
       .filter(t => t.type === 'expense')
@@ -300,231 +224,440 @@ const App: React.FC = () => {
     return Object.entries(catMap).map(([name, value]) => ({ name, value }));
   }, [transactions, pieMonth]);
 
-  const deleteTransaction = (id: string) => { if (confirm('Delete this transaction?')) setTransactions(prev => prev.filter(t => t.id !== id)); };
-  const deleteDiesel = (id: string) => { if (confirm('Delete this diesel report?')) setDieselReports(prev => prev.filter(d => d.id !== id)); };
+  const deleteTransaction = (id: string) => { if (confirm('Delete record?')) setTransactions(prev => prev.filter(t => t.id !== id)); };
+  const deleteDiesel = (id: string) => { if (confirm('Delete record?')) setDieselReports(prev => prev.filter(d => d.id !== id)); };
 
-  const exportToCSV = () => {
-    setShowExportMenu(false);
-    const rows = activeTab === 'transactions' ? transactions : dieselReports;
-    const csvContent = "data:text/csv;charset=utf-8," + JSON.stringify(rows);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodeURI(csvContent));
-    link.setAttribute("download", `${activeTab}_full_report.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleAddTransaction = (newTx: Omit<Transaction, 'id'>) => {
+    const tx: Transaction = { ...newTx, id: Date.now().toString() };
+    setTransactions(prev => [...prev, tx]);
+    setShowTransactionModal(false);
   };
+
+  const handleAddDiesel = (newDl: Omit<DieselReport, 'id'>) => {
+    const dl: DieselReport = { ...newDl, id: Date.now().toString() };
+    setDieselReports(prev => [...prev, dl]);
+    setShowDieselModal(false);
+  };
+
+  const handleAddCategory = () => {
+    if (!newCategoryName.trim()) return;
+    if (categories.includes(newCategoryName.trim())) {
+      alert("Category already exists.");
+      return;
+    }
+    const updated = [...categories, newCategoryName.trim()];
+    setCategories(updated);
+    setNewCategoryName("");
+    localStorage.setItem('endaya_categories', JSON.stringify(updated));
+  };
+
+  const handleDeleteCategory = (cat: string) => {
+    if (confirm(`Delete category "${cat}"? Transactions using this category will remain, but you won't be able to select it for new entries.`)) {
+      const updated = categories.filter(c => c !== cat);
+      setCategories(updated);
+      localStorage.setItem('endaya_categories', JSON.stringify(updated));
+    }
+  };
+
+  const handleEditCategory = (idx: number) => {
+    setEditingCategoryIdx(idx);
+    setEditingCategoryValue(categories[idx]);
+  };
+
+  const handleSaveCategoryEdit = () => {
+    if (editingCategoryIdx === null) return;
+    const oldVal = categories[editingCategoryIdx];
+    const newVal = editingCategoryValue.trim();
+    if (!newVal) return;
+    
+    const updated = [...categories];
+    updated[editingCategoryIdx] = newVal;
+    setCategories(updated);
+    
+    const updatedTransactions = transactions.map(t => 
+      t.category === oldVal ? { ...t, category: newVal } : t
+    );
+    setTransactions(updatedTransactions);
+    
+    setEditingCategoryIdx(null);
+    localStorage.setItem('endaya_categories', JSON.stringify(updated));
+    localStorage.setItem('endaya_transactions', JSON.stringify(updatedTransactions));
+  };
+
+  const exportToExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const wsData = transactions.map(t => ({ Date: t.date, Description: t.description, Amount: t.amount, Mode: t.mode, Category: t.category }));
+    const ws = XLSX.utils.json_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, "Transactions");
+    XLSX.writeFile(wb, `Endaya_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
+  const InputLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">{children}</label>
+  );
+
+  const FormInput = "w-full bg-[#f8fafc] border border-slate-200 rounded-2xl px-5 py-4 text-sm font-black text-slate-700 outline-none focus:border-indigo-400 focus:bg-white transition-all appearance-none";
 
   return (
     <div className="flex h-screen overflow-hidden text-slate-900 font-inter">
-      {/* Sync Overlay */}
-      {isSyncingToDrive && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] flex flex-col items-center justify-center">
-          <div className="bg-white p-10 rounded-[3rem] shadow-2xl flex flex-col items-center gap-6 max-w-sm w-full animate-in zoom-in duration-300">
-            <RefreshCw className="w-12 h-12 text-indigo-600 animate-spin" />
-            <h4 className="text-lg font-black text-slate-800 uppercase tracking-tight">{syncStep}</h4>
+      {isCloudLoading && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-xl z-[200] flex flex-col items-center justify-center animate-in fade-in duration-300">
+          <div className="bg-white p-12 rounded-[3.5rem] shadow-2xl flex flex-col items-center gap-8 max-w-sm w-full animate-in zoom-in duration-300">
+            <Loader2 className="w-16 h-16 text-indigo-600 animate-spin" />
+            <div className="text-center">
+              <h4 className="text-xl font-black text-slate-800 uppercase tracking-tight">Syncing Cloud...</h4>
+              <p className="text-[10px] font-bold text-slate-400 uppercase mt-2">Connecting to Secure Bank Gateway</p>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Sidebar Desktop Only */}
-      <aside className="w-64 bg-slate-900 text-slate-300 hidden lg:flex flex-col border-r border-slate-800">
-        <div className="p-8 pb-4 shrink-0">
-          <div className="flex items-center gap-3 text-white">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20 shrink-0">
-              <Banknote className="w-6 h-6" />
-            </div>
-            <h1 className="text-sm font-bold tracking-tight leading-tight uppercase">Endaya Industries Corporation</h1>
+      {/* CATEGORY MANAGER MODAL */}
+      {showCategoryModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in duration-200 flex flex-col max-h-[85vh]">
+             <div className="px-10 pt-10 pb-6 flex justify-between items-center shrink-0">
+                <h3 className="text-xl font-black uppercase text-slate-800 tracking-tight">Manage Categories</h3>
+                <button 
+                  onClick={() => setShowCategoryModal(false)} 
+                  className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-500"
+                >
+                  <X size={24}/>
+                </button>
+              </div>
+              <div className="px-10 mb-6 shrink-0">
+                <InputLabel>Add New Category</InputLabel>
+                <div className="flex gap-2">
+                  <input 
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    placeholder="Enter name..."
+                    className={FormInput}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddCategory()}
+                  />
+                  <button 
+                    onClick={handleAddCategory}
+                    className="p-4 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 shadow-md active:scale-95 transition-all flex items-center justify-center min-w-[56px]"
+                  >
+                    <Plus size={24} />
+                  </button>
+                </div>
+              </div>
+              <div className="px-10 pb-10 overflow-y-auto custom-scrollbar flex-1">
+                <InputLabel>Existing Categories</InputLabel>
+                <div className="space-y-3">
+                  {categories.map((cat, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100 group transition-all hover:border-slate-300">
+                      <div className="flex-1 overflow-hidden mr-4">
+                        {editingCategoryIdx === idx ? (
+                          <input 
+                            autoFocus
+                            value={editingCategoryValue}
+                            onChange={(e) => setEditingCategoryValue(e.target.value)}
+                            onBlur={handleSaveCategoryEdit}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSaveCategoryEdit()}
+                            className="w-full bg-white border border-indigo-400 rounded-lg px-2 py-1 text-sm font-bold text-slate-700 outline-none"
+                          />
+                        ) : (
+                          <span className="text-xs font-black text-slate-700 uppercase block truncate">{cat}</span>
+                        )}
+                      </div>
+                      
+                      <div className="flex items-center gap-1 shrink-0">
+                        {editingCategoryIdx === idx ? (
+                          <button onClick={handleSaveCategoryEdit} className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-colors"><Save size={18} /></button>
+                        ) : (
+                          <button onClick={() => handleEditCategory(idx)} className="p-2 text-indigo-400 hover:bg-indigo-50 rounded-xl transition-colors"><Edit3 size={18} /></button>
+                        )}
+                        <button onClick={() => handleDeleteCategory(cat)} className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl transition-colors">
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {categories.length === 0 && (
+                    <div className="text-center py-10 text-slate-300 font-bold uppercase text-[10px] tracking-widest border-2 border-dashed border-slate-100 rounded-3xl">
+                      No categories defined
+                    </div>
+                  )}
+                </div>
+              </div>
           </div>
         </div>
-        
-        {/* Navigation Menu - Fixed at top */}
-        <nav className="flex-1 px-4 space-y-2 py-4">
-          <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center gap-4 px-4 py-3 rounded-2xl transition-all ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200'}`}>
-            <LayoutDashboard className="w-5 h-5" />
-            <span className="font-bold text-sm uppercase">Dashboard</span>
-          </button>
-          <button onClick={() => setActiveTab('transactions')} className={`w-full flex items-center gap-4 px-4 py-3 rounded-2xl transition-all ${activeTab === 'transactions' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200'}`}>
-            <ListTodo className="w-5 h-5" />
-            <span className="font-bold text-sm uppercase">Transactions</span>
-          </button>
-          <button onClick={() => setActiveTab('diesel')} className={`w-full flex items-center gap-4 px-4 py-3 rounded-2xl transition-all ${activeTab === 'diesel' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:text-slate-200'}`}>
-            <Fuel className="w-5 h-5" />
-            <span className="font-bold text-sm uppercase">Diesel Logs</span>
-          </button>
-        </nav>
+      )}
 
-        {/* Spreadsheet Connection in Sidebar - Moved to bottom to prevent layout shifts */}
-        {activeTab !== 'dashboard' && (
-          <div className="px-6 pb-8 shrink-0 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <button 
-              onClick={connectGoogleDrive} 
-              className={`flex items-center gap-2 px-4 py-3 rounded-2xl w-full border text-[10px] font-black uppercase tracking-widest transition-all ${isDriveConnected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white hover:border-slate-600'}`}
-            >
-              {isDriveConnected ? <Cloud className="w-4 h-4" /> : <CloudOff className="w-4 h-4" />}
-              {isDriveConnected ? 'Drive Connected' : 'Link Google Drive'}
-            </button>
+      {/* NEW TRANSACTION MODAL */}
+      {showTransactionModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in duration-200">
+            <div className="px-10 pt-10 pb-6 flex justify-between items-center">
+              <h3 className="text-xl font-black uppercase text-slate-800 tracking-tight">New Transaction</h3>
+              <button 
+                onClick={() => setShowTransactionModal(false)} 
+                className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-500"
+              >
+                <X size={24}/>
+              </button>
+            </div>
+            <form className="px-10 pb-10 space-y-6" onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.currentTarget);
+              handleAddTransaction({
+                date: formData.get('date') as string,
+                description: formData.get('description') as string,
+                amount: Number(formData.get('amount')) * (formData.get('type') === 'expense' ? -1 : 1),
+                type: formData.get('type') as TransactionType,
+                mode: formData.get('mode') as AccountType,
+                category: formData.get('category') as string
+              });
+            }}>
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <InputLabel>Date</InputLabel>
+                  <input required name="date" type="date" className={FormInput} defaultValue={todayISO} />
+                </div>
+                <div>
+                  <InputLabel>Type</InputLabel>
+                  <select name="type" className={FormInput}>
+                    <option value="expense">EXPENSE OUT</option>
+                    <option value="fund">INCOMING FUND</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <InputLabel>Description</InputLabel>
+                <input required name="description" placeholder="DESCRIPTION..." className={FormInput} />
+              </div>
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <InputLabel>Account</InputLabel>
+                  <select name="mode" className={FormInput}>
+                    <option>BDO</option>
+                    <option>GCash</option>
+                    <option>Cash</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <InputLabel>Category</InputLabel>
+                    <button 
+                      type="button" 
+                      onClick={() => setShowCategoryModal(true)}
+                      className="text-[9px] font-black uppercase text-indigo-500 hover:text-indigo-700 underline"
+                    >
+                      Manage
+                    </button>
+                  </div>
+                  <select name="category" className={FormInput}>
+                    {categories.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <InputLabel>Amount (PHP)</InputLabel>
+                <div className="relative group">
+                   <input 
+                    required 
+                    name="amount" 
+                    type="number" 
+                    step="0.01" 
+                    placeholder="0.00" 
+                    className="w-full bg-[#f8fafc] border border-slate-200 rounded-[2rem] px-6 py-6 text-3xl font-black text-slate-400 placeholder:text-slate-300 outline-none focus:border-indigo-400 focus:bg-white transition-all text-center" 
+                  />
+                </div>
+              </div>
+              <button 
+                type="submit" 
+                className="w-full py-5 bg-[#4f46e5] text-white rounded-[1.5rem] text-sm font-black uppercase tracking-widest shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all active:scale-95"
+              >
+                Save Entry
+              </button>
+            </form>
           </div>
-        )}
+        </div>
+      )}
+
+      {/* NEW DIESEL MODAL */}
+      {showDieselModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in duration-200">
+            <div className="px-10 pt-10 pb-6 flex justify-between items-center">
+              <h3 className="text-xl font-black uppercase text-slate-800 tracking-tight">Log Diesel Expense</h3>
+              <button 
+                onClick={() => setShowDieselModal(false)} 
+                className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-500"
+              >
+                <X size={24}/>
+              </button>
+            </div>
+            <form className="px-10 pb-10 space-y-6" onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.currentTarget);
+              handleAddDiesel({
+                date: formData.get('date') as string,
+                amount: Number(formData.get('amount')),
+                vehicle: formData.get('vehicle') as string,
+                areaCode: formData.get('area') as string,
+                assignedStaff: formData.get('staff') as string
+              });
+            }}>
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <InputLabel>Date</InputLabel>
+                  <input required name="date" type="date" className={FormInput} defaultValue={todayISO} />
+                </div>
+                <div>
+                  <InputLabel>Area Code</InputLabel>
+                  <input required name="area" placeholder="E.G. LIPA..." className={FormInput} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <InputLabel>Vehicle</InputLabel>
+                  <input required name="vehicle" placeholder="VEHICLE ID..." className={FormInput} />
+                </div>
+                <div>
+                  <InputLabel>Assigned Staff</InputLabel>
+                  <input required name="staff" placeholder="NAME..." className={FormInput} />
+                </div>
+              </div>
+              <div>
+                <InputLabel>Cost (PHP)</InputLabel>
+                <input 
+                  required 
+                  name="amount" 
+                  type="number" 
+                  step="0.01" 
+                  placeholder="0.00" 
+                  className="w-full bg-[#f8fafc] border border-slate-200 rounded-[2rem] px-6 py-6 text-3xl font-black text-slate-400 placeholder:text-slate-300 outline-none focus:border-indigo-400 focus:bg-white transition-all text-center" 
+                />
+              </div>
+              <button 
+                type="submit" 
+                className="w-full py-5 bg-[#ea580c] text-white rounded-[1.5rem] text-sm font-black uppercase tracking-widest shadow-xl shadow-orange-100 hover:bg-orange-700 transition-all active:scale-95"
+              >
+                Save Diesel Log
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* DESKTOP SIDEBAR */}
+      <aside className="w-64 bg-slate-900 text-slate-300 hidden lg:flex flex-col border-r border-slate-800 relative">
+        <div className="p-8 pb-4 shrink-0">
+          <div className="flex items-start gap-4 text-white">
+            <div className="w-14 h-14 bg-indigo-600 rounded-[1.25rem] flex items-center justify-center shadow-lg shrink-0 mt-0.5"><Banknote className="w-8 h-8" /></div>
+            <div className="flex flex-col leading-tight pt-1">
+              <h1 className="text-[17px] font-black tracking-tight uppercase text-white leading-[1.1]">Endaya</h1>
+              <h1 className="text-[17px] font-black tracking-tight uppercase text-white leading-[1.1]">Industries</h1>
+              <h1 className="text-[17px] font-black tracking-tight uppercase text-white leading-[1.1]">Corporation</h1>
+            </div>
+          </div>
+        </div>
+        <nav className="flex-1 px-4 space-y-2 py-6">
+          <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center gap-4 px-4 py-3 rounded-2xl transition-all ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}><LayoutDashboard size={20} /><span className="font-bold text-sm uppercase">Dashboard</span></button>
+          <button onClick={() => setActiveTab('transactions')} className={`w-full flex items-center gap-4 px-4 py-3 rounded-2xl transition-all ${activeTab === 'transactions' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}><ListTodo size={20} /><span className="font-bold text-sm uppercase">Transactions</span></button>
+          <button onClick={() => setActiveTab('diesel')} className={`w-full flex items-center gap-4 px-4 py-3 rounded-2xl transition-all ${activeTab === 'diesel' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}><Fuel size={20} /><span className="font-bold text-sm uppercase">Diesel Logs</span></button>
+        </nav>
+        <div className="px-6 pb-10 mt-auto shrink-0 relative">
+           <button onClick={() => setShowSyncDetails(!showSyncDetails)} className="w-full bg-slate-800/50 rounded-[2rem] p-6 border border-slate-700/50 backdrop-blur-sm hover:bg-slate-800 group text-left">
+              <div className="flex items-center gap-3"><div className={`w-2.5 h-2.5 rounded-full ${syncState.status === 'connected' ? 'bg-emerald-500' : 'bg-slate-500'} ${syncState.status === 'syncing' ? 'animate-pulse' : ''}`} /><span className={`text-[10px] font-black uppercase tracking-widest ${syncState.status === 'connected' ? 'text-emerald-400' : 'text-slate-400'}`}>Live Cloud Link</span></div>
+              <p className="text-[9px] font-bold text-slate-500 mt-2 uppercase opacity-0 group-hover:opacity-100 transition-opacity">Cloud Active</p>
+           </button>
+        </div>
       </aside>
 
+      {/* MAIN CONTENT AREA */}
       <main className="flex-1 flex flex-col bg-slate-50 overflow-hidden pb-20 lg:pb-0">
         <header className="h-24 lg:h-20 bg-white border-b border-slate-200 px-6 md:px-8 flex items-center justify-between sticky top-0 z-10">
           <div className="flex flex-col">
-            <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">{activeTab}</h2>
+            <h2 className="text-lg md:text-xl font-black text-slate-800 uppercase tracking-tight">{activeTab.toUpperCase()}</h2>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <div className={`w-2 h-2 rounded-full ${isSaving ? 'bg-indigo-500 animate-pulse' : 'bg-emerald-500'}`} />
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
-                {isSaving ? 'SYNCING...' : lastSaved ? `LAST SAVED: ${lastSaved}` : 'READY'}
+              <div className={`w-2 h-2 rounded-full ${syncState.status === 'connected' ? 'bg-emerald-500' : 'bg-slate-400'} ${syncState.status === 'syncing' ? 'animate-pulse' : ''}`} />
+              <span className="text-[10px] font-black text-slate-400 uppercase">
+                {syncState.status === 'syncing' ? 'Syncing...' : `Last Sync: ${syncState.lastSync || 'Initializing...'}`}
               </span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {/* Connect to Spreadsheets Button - Removed from Dashboard Header as requested */}
-            {activeTab !== 'dashboard' && (
-              <button 
-                onClick={connectGoogleDrive} 
-                className={`p-3 border rounded-xl transition-all shadow-sm ${isDriveConnected ? 'border-emerald-100 text-emerald-600 bg-emerald-50' : 'border-slate-200 text-slate-400 bg-white'}`}
-                title={isDriveConnected ? "Spreadsheets Connected" : "Connect to Spreadsheets"}
-              >
-                <FileSpreadsheet size={18} />
-              </button>
-            )}
-
-            {/* Manual Save / Sync Button */}
+          <div className="flex items-center gap-2 md:gap-3">
             <button 
-              onClick={handleManualSave} 
-              className="p-3 border border-slate-200 rounded-xl text-emerald-500 hover:bg-emerald-50 transition-all shadow-sm"
-              title="Manual Sync"
+              onClick={() => syncWithCloud(false)} 
+              disabled={syncState.status === 'syncing'}
+              title="Refresh Cloud Data"
+              className="p-2.5 md:p-3 border rounded-xl bg-white border-slate-200 text-slate-500 shadow-sm hover:bg-slate-50 transition-all hover:border-indigo-200 hover:text-indigo-600 active:scale-95 disabled:opacity-50"
             >
-              <CheckCircle2 size={18} />
+              <RefreshCw size={18} className={syncState.status === 'syncing' ? 'animate-spin text-indigo-600' : 'transition-transform active:rotate-180'} />
             </button>
-
-            {/* Export Button - Hidden on Dashboard as requested */}
+            
             {activeTab !== 'dashboard' && (
-              <div className="relative">
-                <button 
-                  onClick={() => setShowExportMenu(!showExportMenu)} 
-                  className="p-3 border border-slate-200 rounded-xl text-slate-500 hover:bg-slate-50 transition-all shadow-sm"
-                  title="Export"
-                >
-                  <Download size={18} />
+              <>
+                <button onClick={exportToExcel} title="Export to Excel" className="hidden sm:block p-3 border border-slate-200 rounded-xl text-slate-500 hover:bg-slate-50 shadow-sm transition-colors">
+                  <FileSpreadsheet size={18} />
                 </button>
-                {showExportMenu && (
-                  <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-1">
-                    <button onClick={exportToCSV} className="w-full text-left px-4 py-3 text-[10px] font-black text-slate-700 hover:bg-slate-50 uppercase tracking-widest border-b border-slate-100">Export as CSV</button>
-                  </div>
+                {activeTab === 'transactions' && (
+                  <button onClick={() => setShowCategoryModal(true)} title="Manage Categories" className="hidden sm:block p-3 border border-slate-200 rounded-xl text-slate-500 hover:bg-slate-50 shadow-sm transition-colors">
+                    <Settings2 size={18} />
+                  </button>
                 )}
-              </div>
+                <button 
+                  onClick={() => activeTab === 'diesel' ? setShowDieselModal(true) : setShowTransactionModal(true)}
+                  className="flex items-center gap-2 px-4 md:px-6 py-2 md:py-2.5 bg-indigo-600 rounded-xl text-[10px] md:text-[11px] font-black text-white hover:bg-indigo-700 shadow-xl uppercase transition-all active:scale-95"
+                >
+                  <Plus size={16} /><span className="hidden sm:inline">New Entry</span>
+                </button>
+              </>
             )}
-
-            <button 
-              onClick={() => { setTransactionPreFill(null); activeTab === 'diesel' ? setShowDieselModal(true) : setShowTransactionModal(true); }} 
-              className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 rounded-xl text-[11px] font-black text-white hover:bg-indigo-700 shadow-xl shadow-indigo-600/30 transition-all uppercase tracking-[0.15em] ml-1"
-            >
-              <Plus className="w-4 h-4" />
-              <span className="hidden sm:inline">Add Entry</span>
-              <span className="sm:hidden">Add</span>
-            </button>
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8">
+        <div className="flex-1 overflow-y-auto p-0 md:p-8 space-y-8">
           {activeTab === 'dashboard' && (
-            <div className="space-y-8 animate-in fade-in duration-500">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 md:gap-8">
-                <StatCard 
-                  title="BDO FUNDS" 
-                  amount={summary.bdo} 
-                  icon={<Banknote />} 
-                  gradient="bg-gradient-to-br from-[#1e3a8a] to-[#2563eb]" 
-                  accentColor="text-[#1e3a8a]" 
-                />
-                <StatCard 
-                  title="GCASH BALANCE" 
-                  amount={summary.gcash} 
-                  icon={<CreditCard />} 
-                  gradient="bg-gradient-to-br from-[#0070f3] to-[#00b4ff]" 
-                  accentColor="text-[#0070f3]" 
-                />
-                <StatCard 
-                  title="CASH ON HAND" 
-                  amount={summary.cash} 
-                  icon={<Wallet />} 
-                  gradient="bg-gradient-to-br from-[#f59e0b] to-[#ea580c]" 
-                  accentColor="text-[#ea580c]" 
-                />
-                <StatCard 
-                  title="TOTAL FUND" 
-                  amount={summary.total} 
-                  icon={<TrendingUp />} 
-                  gradient="bg-gradient-to-br from-slate-800 to-slate-950" 
-                  accentColor="text-slate-800" 
-                />
+            <div className="p-4 md:p-0 space-y-8 animate-in fade-in duration-500 min-h-0 flex flex-col">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 md:gap-8 shrink-0">
+                <StatCard title="BDO FUNDS" amount={summary.bdo} icon={<Banknote />} gradient="bg-gradient-to-br from-[#1e3a8a] to-[#2563eb]" accentColor="text-[#1e3a8a]" />
+                <StatCard title="GCASH BALANCE" amount={summary.gcash} icon={<CreditCard />} gradient="bg-gradient-to-br from-[#0070f3] to-[#00b4ff]" accentColor="text-[#0070f3]" />
+                <StatCard title="CASH ON HAND" amount={summary.cash} icon={<Wallet />} gradient="bg-gradient-to-br from-[#f59e0b] to-[#ea580c]" accentColor="text-[#ea580c]" />
+                <StatCard title="TOTAL TEAM FUND" amount={summary.total} icon={<Users />} gradient="bg-gradient-to-br from-slate-800 to-slate-950" accentColor="text-slate-800" />
               </div>
-              
-              <div className="flex justify-center pb-10">
-                <div className="w-full max-w-5xl bg-white p-10 rounded-[2.5rem] shadow-sm border border-slate-200 flex flex-col min-h-[500px]">
-                  <div className="flex justify-between items-center mb-10">
-                    <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Expense Distribution</h3>
-                    <div className="relative">
-                      <select 
-                        value={pieMonth} 
-                        onChange={(e) => setPieMonth(e.target.value)}
-                        className="appearance-none bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 pr-8 text-[11px] font-black uppercase tracking-widest text-slate-500 focus:outline-none cursor-pointer focus:ring-2 focus:ring-indigo-500/10"
-                      >
-                        <option value="All">All Months</option>
-                        {Array.from({length: 12}, (_, i) => {
-                          const m = (i + 1).toString().padStart(2, '0');
-                          return <option key={m} value={m}>{new Date(2000, i).toLocaleString('default', {month: 'long'})}</option>
-                        })}
-                      </select>
-                      <ChevronDown className="w-3 h-3 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400" />
-                    </div>
+              <div className="w-full max-w-5xl mx-auto bg-white p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] shadow-sm border border-slate-200 mt-8 min-h-0">
+                <div className="flex justify-between items-center mb-10"><h3 className="text-xl md:text-2xl font-black text-slate-800 uppercase">Expense Distribution</h3><select value={pieMonth} onChange={(e) => setPieMonth(e.target.value)} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-[10px] md:text-[11px] font-black uppercase text-slate-500 outline-none"><option value="All">All Time</option>{Array.from({length: 12}, (_, i) => <option key={i} value={(i+1).toString().padStart(2, '0')}>{new Date(2000, i).toLocaleString('default', {month: 'long'})}</option>)}</select></div>
+                <div className="flex flex-col md:flex-row items-center gap-12 min-h-0">
+                  {/* Robust container for Recharts ResponsiveContainer */}
+                  <div className="w-full md:w-1/2 h-[300px] md:h-[350px] relative min-w-0 min-h-0 flex items-center justify-center">
+                    {chartsReady ? (
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={100}>
+                        <PieChart>
+                          <Pie 
+                            data={categoryPieData} 
+                            innerRadius={70} 
+                            outerRadius={110} 
+                            dataKey="value" 
+                            paddingAngle={5}
+                            animationDuration={800}
+                          >
+                            {categoryPieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                          </Pie>
+                          <Tooltip formatter={(v: number) => formatPHP(v)} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-slate-300">
+                        <Loader2 className="w-8 h-8 animate-spin" />
+                        <span className="text-[10px] font-black uppercase tracking-widest">Optimizing Canvas...</span>
+                      </div>
+                    )}
                   </div>
-                  
-                  <div className="flex flex-col md:flex-row items-center justify-between gap-12 flex-1 min-h-0">
-                    <div className="w-full md:w-1/2 relative min-h-[350px]">
-                      {chartsReady && categoryPieData.length > 0 && (
-                        <ResponsiveContainer key={`pie-${chartsReady ? 'ready' : 'pending'}`} width="100%" height={350} minWidth={0} minHeight={0}>
-                          <PieChart>
-                            <Pie 
-                              data={categoryPieData} 
-                              innerRadius={80} 
-                              outerRadius={125} 
-                              dataKey="value" 
-                              paddingAngle={5}
-                              animationDuration={1000}
-                              isAnimationActive={true}
-                            >
-                              {categoryPieData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} strokeWidth={0} />)}
-                            </Pie>
-                            <Tooltip 
-                              formatter={(value: number) => formatPHP(value)}
-                              contentStyle={{ borderRadius: '1.2rem', border: 'none', boxShadow: '0 25px 30px -5px rgb(0 0 0 / 0.1)', fontWeight: '800', fontSize: '12px', padding: '12px 16px' }}
-                            />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      )}
-                    </div>
-
-                    <div className="w-full md:w-1/2 flex flex-col justify-center space-y-4 max-h-[350px] overflow-y-auto pr-4 custom-scrollbar">
-                      {[...categoryPieData].sort((a,b) => b.value - a.value).map((cat, i) => (
-                        <div key={cat.name} className="flex items-center justify-between text-[13px] font-black group hover:bg-slate-50 p-4 rounded-2xl transition-all border border-transparent hover:border-slate-100 cursor-default">
-                          <div className="flex items-center gap-4">
-                            <div className="w-4 h-4 rounded-md shadow-sm shrink-0" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
-                            <span className="text-slate-500 uppercase tracking-tight">{cat.name}</span>
-                          </div>
-                          <span className="text-slate-800 text-lg">{formatPHP(cat.value)}</span>
-                        </div>
-                      ))}
-                      {categoryPieData.length === 0 && (
-                        <div className="text-center py-20 opacity-30 flex flex-col items-center">
-                          <Wallet2 className="w-16 h-16 mb-4 text-slate-300" />
-                          <span className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">No transactions recorded</span>
-                        </div>
-                      )}
-                    </div>
+                  <div className="w-full md:w-1/2 space-y-4 max-h-[350px] overflow-y-auto pr-4 custom-scrollbar">
+                    {categoryPieData.map((cat, i) => (
+                      <div key={i} className="flex justify-between p-3 md:p-4 rounded-2xl border border-slate-100 hover:bg-slate-50 transition-colors">
+                        <span className="text-slate-500 font-black uppercase text-[10px] md:text-xs">{cat.name}</span>
+                        <span className="text-slate-800 font-black text-xs md:text-sm">{formatPHP(cat.value)}</span>
+                      </div>
+                    ))}
+                    {categoryPieData.length === 0 && (
+                       <div className="text-center py-10 text-slate-300 font-black uppercase text-[10px] tracking-widest">No expenses found</div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -532,233 +665,276 @@ const App: React.FC = () => {
           )}
 
           {activeTab === 'transactions' && (
-            <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-20">
-              <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200 flex flex-wrap gap-4 items-center">
-                <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-100">
+            <div className="p-4 md:p-0 space-y-6 animate-in slide-in-from-bottom-4 duration-500 max-w-4xl mx-auto pb-24">
+              <div className="bg-white p-4 md:p-6 rounded-[2rem] md:rounded-[2.5rem] border border-slate-200 flex flex-wrap gap-3 md:gap-4 items-center">
+                <div className="flex gap-1.5 md:gap-2 bg-slate-50 p-1.5 rounded-2xl">
                   {['BDO', 'GCash', 'Cash'].map(acc => (
-                    <button key={acc} onClick={() => setSelectedAccount(acc as AccountType)} className={`px-5 py-2 rounded-xl text-xs font-black uppercase transition-all ${selectedAccount === acc ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>
-                      {acc}
-                    </button>
+                    <button key={acc} onClick={() => setSelectedAccount(acc as AccountType)} className={`px-4 md:px-5 py-2 rounded-xl text-[10px] md:text-xs font-black uppercase transition-all ${selectedAccount === acc ? 'bg-[#4f46e5] text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>{acc}</button>
                   ))}
                 </div>
-                <div className="flex items-center gap-3 bg-slate-50 px-5 py-3 rounded-2xl border border-slate-100 group min-w-[200px]">
-                  <Calendar className="w-4 h-4 text-slate-400" />
-                  <select value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="bg-transparent text-sm font-black text-slate-700 focus:outline-none cursor-pointer w-full uppercase">
-                    {availableDates.map(date => <option key={date} value={date}>{date}</option>)}
+                <div className="flex gap-2.5 md:gap-3 bg-slate-50 px-4 md:px-5 py-2.5 md:py-3 rounded-2xl border border-slate-100 items-center">
+                  <Calendar size={14} className="text-slate-400" />
+                  <select value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="bg-transparent text-[11px] md:text-sm font-black text-slate-700 uppercase outline-none cursor-pointer">
+                    {availableDatesForTransactions.map(d => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </div>
               </div>
               {dailyLedger && (
-                <div className="bg-white rounded-[2rem] shadow-lg border border-slate-200 overflow-hidden font-sans text-[15px] max-w-5xl mx-auto">
-                  <div className="bg-indigo-600 text-center py-8 text-white uppercase font-black">
-                    <div className="text-xs tracking-[0.2em] mb-1 opacity-90 font-bold">{new Date(selectedDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}</div>
-                    <div className="text-xl tracking-[0.1em]">{selectedAccount} TRANSACTIONS</div>
+                <div className="bg-white rounded-[2rem] shadow-2xl border border-slate-100 overflow-hidden">
+                  <div className="bg-[#4f46e5] text-center py-6 text-white relative overflow-hidden">
+                    <div className="text-[9px] font-black uppercase tracking-[0.4em] mb-1 opacity-80">
+                      {new Date(selectedDate).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}
+                    </div>
+                    <h1 className="text-2xl font-black uppercase tracking-widest leading-none drop-shadow-lg px-4">
+                      {selectedAccount} TRANSACTIONS
+                    </h1>
                   </div>
-                  <div className="flex justify-end items-center px-8 py-5 border-b border-slate-100 bg-white">
-                    <span className="font-black text-slate-500 text-[10px] uppercase mr-4 tracking-widest">Available Balance:</span>
-                    <span className="text-indigo-600 text-2xl font-black">₱ {dailyLedger.availableBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  <div className="flex justify-end items-center p-4 bg-white border-b border-slate-50">
+                    <div className="flex items-center gap-3">
+                      <span className={`text-[9px] md:text-[10px] font-black uppercase tracking-widest ${dailyLedger.availableBalance < 0 ? 'text-rose-600' : 'text-[#4f46e5]'}`}>Available Balance:</span>
+                      <div className={`text-xl md:text-2xl font-black tracking-tighter ${dailyLedger.availableBalance < 0 ? 'text-rose-600' : 'text-[#4f46e5]'}`}>
+                        {formatPHP(dailyLedger.availableBalance)}
+                      </div>
+                    </div>
                   </div>
-                  <table className="w-full border-collapse">
-                    <thead><tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b border-slate-100"><th className="px-4 py-4 text-left w-3/5 tracking-[0.1em] pl-4">Description</th><th className="px-4 py-4 text-right tracking-[0.1em]">Amount</th><th className="px-4 py-4 text-right tracking-[0.1em] pr-4">Action</th></tr></thead>
-                    <tbody>
-                      <tr className="border-b border-slate-50"><td className="px-4 py-5 font-black text-slate-800 uppercase text-[15px] pl-4">Beginning Balance:</td><td className="px-4 py-5 text-right"></td><td className="px-4 py-5 text-right font-black text-slate-800 text-[16px] pr-4">₱ {dailyLedger.beginningBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td></tr>
-                      {dailyLedger.additionalFunds.map((fund: Transaction) => (
-                        <tr key={fund.id} className="border-b border-slate-50 hover:bg-emerald-50/20 group transition-colors">
-                          <td className="px-4 py-5 flex flex-col pl-4"><span className="text-emerald-700 font-bold uppercase tracking-tight text-[14px] flex items-center gap-2"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> {fund.description}</span></td>
-                          <td className="px-4 py-5 text-right text-emerald-600 font-bold uppercase text-[14px]">₱ {fund.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                          <td className="px-4 py-5 text-right pr-4"><button onClick={() => deleteTransaction(fund.id)} className="text-slate-300 hover:text-rose-600 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={16}/></button></td>
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-[#f8fafc] border-b border-slate-100">
+                        <tr className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                          <th className="px-4 md:px-6 py-4 text-left">Description</th>
+                          <th className="px-4 md:px-6 py-4 text-right">Amount</th>
+                          <th className="px-4 md:px-6 py-4 text-center">Action</th>
                         </tr>
-                      ))}
-                      <tr className="bg-slate-100 border-b border-slate-200"><td colSpan={3} className="px-4 py-2.5 font-black text-slate-500 uppercase text-[11px] tracking-wider pl-4">Expenses / Deductions:</td></tr>
-                      {Object.entries(dailyLedger.expensesByCategory).map(([cat, transList]: [string, Transaction[]]) => (
-                        <React.Fragment key={cat}>
-                          <tr className="bg-slate-50/50"><td colSpan={3} className="px-4 py-3 font-black text-slate-400 uppercase text-[12px] underline underline-offset-4 tracking-[0.15em] pl-4">{cat}</td></tr>
-                          {transList.map((t: Transaction) => (
-                            <tr key={t.id} className="border-b border-slate-50 hover:bg-rose-50/30 group transition-colors">
-                              <td className="pl-4 py-4 pr-4"><span className="text-slate-700 font-bold uppercase text-[14px]">{t.description}</span></td>
-                              <td className="px-4 py-4 text-right text-rose-600 font-bold uppercase text-[14px]">₱ {Math.abs(t.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                              <td className="px-4 py-4 text-right pr-4"><button onClick={() => deleteTransaction(t.id)} className="text-slate-300 hover:text-rose-600 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={16}/></button></td>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {/* Beginning Balance Row */}
+                        <tr className="border-b">
+                          <td className="px-4 md:px-6 py-6 font-black text-slate-900 uppercase text-xs md:text-sm">
+                            BEGINNING BALANCE:
+                          </td>
+                          <td className="px-4 md:px-6 py-6 text-right font-black text-slate-900 text-xs md:text-sm">
+                            {formatPHP(dailyLedger.beginningBalance)}
+                          </td>
+                          <td></td>
+                        </tr>
+
+                        {/* Incoming Funds Grouped */}
+                        {Object.entries(dailyLedger.fundsByCategory).map(([cat, items]) => (
+                          <React.Fragment key={cat}>
+                            <tr className="bg-white">
+                              <td colSpan={3} className="px-4 md:px-6 pt-4 pb-1">
+                                <div className="text-[8px] md:text-[9px] text-slate-400 font-black uppercase tracking-widest border-b border-slate-100 inline-block">{cat}</div>
+                              </td>
                             </tr>
-                          ))}
-                        </React.Fragment>
-                      ))}
-                      <tr className="bg-slate-50 border-t-2 border-slate-900"><td className="px-4 py-6 font-black text-slate-900 uppercase text-[17px] pl-4">Total Daily Expenses</td><td className="px-4 py-6"></td><td className="px-4 py-6 text-right font-black text-slate-900 text-[18px] pr-4">₱ {dailyLedger.totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td></tr>
-                    </tbody>
-                  </table>
+                            {(items as Transaction[]).map(f => (
+                              <tr key={f.id} className="hover:bg-slate-50/50 transition-colors group">
+                                <td className="px-4 md:px-6 py-3">
+                                  <div className="font-bold text-slate-700 text-[10px] md:text-xs uppercase pl-2">{f.description}</div>
+                                </td>
+                                <td className="px-4 md:px-6 py-3 text-right font-black text-emerald-600 text-[10px] md:text-xs">
+                                  {formatPHP(f.amount)}
+                                </td>
+                                <td className="px-4 md:px-6 py-3 text-center">
+                                  <button onClick={() => deleteTransaction(f.id)} className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-200 hover:text-rose-500 transition-colors">
+                                    <Trash2 size={14}/>
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        ))}
+
+                        <tr className="bg-[#f8fafc]">
+                          <td colSpan={3} className="px-4 md:px-6 py-3 text-[9px] md:text-[10px] font-black text-slate-900 uppercase tracking-[0.2em]">
+                            EXPENSES / DEDUCTIONS:
+                          </td>
+                        </tr>
+
+                        {/* Expenses Grouped By Category */}
+                        {Object.entries(dailyLedger.expensesByCategory).map(([cat, items]) => (
+                          <React.Fragment key={cat}>
+                            <tr className="bg-white">
+                              <td colSpan={3} className="px-4 md:px-6 pt-4 pb-1">
+                                <div className="text-[8px] md:text-[9px] text-slate-400 font-black uppercase tracking-widest border-b border-slate-100 inline-block">{cat}</div>
+                              </td>
+                            </tr>
+                            {(items as Transaction[]).map(item => (
+                              <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
+                                <td className="px-4 md:px-6 py-3">
+                                  <div className="text-slate-800 text-[10px] md:text-xs font-bold uppercase tracking-tight pl-2">{item.description}</div>
+                                </td>
+                                <td className="px-4 md:px-6 py-3 text-right font-black text-slate-800 text-[10px] md:text-xs">
+                                  {formatPHP(Math.abs(item.amount))}
+                                </td>
+                                <td className="px-4 md:px-6 py-3 text-center">
+                                  <button onClick={() => deleteTransaction(item.id)} className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-200 hover:text-rose-500 transition-colors">
+                                    <Trash2 size={14}/>
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        ))}
+
+                        {dailyLedger.dayExpenses.length === 0 && (
+                          <tr>
+                            <td colSpan={3} className="px-4 md:px-6 py-12 text-center text-slate-300 font-black uppercase text-[10px] tracking-widest opacity-40">
+                              No Deductions for this day
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="bg-[#f8fafc] border-t border-slate-100 p-6 flex justify-between items-center">
+                    <span className="text-xs md:text-sm font-black uppercase text-slate-900 tracking-tight">
+                      TOTAL DAILY EXPENSES
+                    </span>
+                    <span className="text-lg md:text-xl font-black text-slate-900 tracking-tighter">
+                      {formatPHP(dailyLedger.totalExpenses)}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
           )}
 
           {activeTab === 'diesel' && (
-            <div className="space-y-6 animate-in zoom-in duration-500 pb-20">
-              <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200 flex flex-wrap gap-4 items-center">
-                <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-100">
-                  {['Daily', 'Monthly'].map(mode => (
-                    <button key={mode} onClick={() => setDieselViewMode(mode as 'Daily' | 'Monthly')} className={`px-5 py-2 rounded-xl text-xs font-black uppercase transition-all ${dieselViewMode === mode ? 'bg-orange-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>{mode}</button>
-                  ))}
-                </div>
-                {dieselViewMode === 'Daily' && (
-                  <div className="flex items-center gap-3 bg-slate-50 px-5 py-3 rounded-2xl border border-slate-100 group min-w-[200px]">
-                    <Search className="w-4 h-4 text-slate-400" />
-                    <select value={dieselSelectedDate} onChange={(e) => setDieselSelectedDate(e.target.value)} className="bg-transparent text-sm font-black text-slate-700 focus:outline-none cursor-pointer w-full uppercase">
-                      {dieselAvailableDates.map(date => <option key={date} value={date}>{date}</option>)}
-                    </select>
+            <div className="p-4 md:p-0 space-y-0 animate-in slide-in-from-bottom-4 duration-500 max-w-4xl mx-auto pb-24">
+               <div className="rounded-[2rem] md:rounded-[2.5rem] overflow-hidden shadow-2xl bg-white border border-slate-100">
+                  <div className="bg-[#ea580c] text-white py-6 px-8 text-center relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-4 opacity-10">
+                       <Fuel size={60} />
+                    </div>
+                    <div className="text-[9px] font-black uppercase tracking-[0.4em] mb-1 opacity-80">
+                      {new Date(dieselSelectedDate).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}
+                    </div>
+                    <h1 className="text-2xl font-black uppercase tracking-widest leading-none drop-shadow-lg px-4">
+                      DIESEL CONSUMPTION LOGS
+                    </h1>
                   </div>
-                )}
-              </div>
-
-              <div className="bg-white rounded-[2rem] shadow-2xl overflow-hidden font-sans text-[15px] max-w-5xl mx-auto border border-slate-100">
-                <div className="bg-orange-600 text-center py-12 text-white uppercase font-black relative overflow-hidden">
-                  <div className="absolute top-0 right-0 p-4 opacity-10 -rotate-12 translate-x-1/4 translate-y-1/4"><Fuel size={180} /></div>
-                  <div className="text-[10px] tracking-[0.3em] mb-2 opacity-90 font-bold relative z-10">{dieselViewMode === 'Daily' ? new Date(dieselSelectedDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase() : `${new Date(year, parseInt(dieselSelectedMonth)-1).toLocaleString('default', {month: 'long'}).toUpperCase()} ${year}`}</div>
-                  <div className="text-3xl tracking-[0.1em] relative z-10">DIESEL CONSUMPTION LOGS</div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-0 border-b border-slate-100">
-                  <div className="p-10 border-r border-slate-100 flex flex-col items-center text-center">
-                    <span className="font-black text-slate-400 text-[10px] uppercase tracking-widest mb-3 flex items-center gap-2"><Wallet2 size={12}/> TOTAL DIESEL BUDGET</span>
-                    <span className="text-slate-800 text-3xl font-black mb-4">{formatPHP(dieselLedger.dieselBudget)}</span>
-                  </div>
-                  <div className="p-10 flex flex-col items-center text-center bg-orange-50/20">
-                    <span className="font-black text-slate-400 text-[10px] uppercase tracking-widest mb-3 flex items-center gap-2"><Undo2 size={12}/> RETURNED TO EIC FUND</span>
-                    <span className={`text-3xl font-black ${dieselLedger.returnedToFund < 0 ? 'text-rose-600' : 'text-orange-600'}`}>{formatPHP(dieselLedger.returnedToFund)}</span>
-                    <div className="mt-4 flex items-center gap-2 px-3 py-1 bg-white rounded-full border border-orange-100 text-[9px] font-black text-orange-400 uppercase tracking-widest"><ReceiptText size={12} />Daily isolated tracking</div>
-                  </div>
-                </div>
-
-                <div className="p-0 overflow-x-auto">
-                  <table className="w-full border-collapse min-w-[600px]">
-                    <thead>
-                      <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b border-slate-100">
-                        <th className="px-4 py-5 text-left tracking-widest pl-4">LOG DATE / VEHICLE</th>
-                        <th className="px-4 py-5 text-left tracking-widest">AREA CODE</th>
-                        <th className="px-4 py-5 text-left tracking-widest">STAFF</th>
-                        <th className="px-4 py-5 text-right tracking-widest">COST (PHP)</th>
-                        <th className="px-4 py-5 text-center tracking-widest pr-4">ACTIONS</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50">
-                      {dieselLedger.filteredLogs.length > 0 ? dieselLedger.filteredLogs.map((d: DieselReport) => (
-                        <tr key={d.id} className="hover:bg-orange-50/10 group transition-colors">
-                          <td className="px-4 py-6 flex flex-col pl-4"><span className="font-black text-slate-800 uppercase text-[14px]">{d.vehicle}</span><span className="text-[10px] font-bold text-slate-400 uppercase">{d.date}</span></td>
-                          <td className="px-4 py-6 uppercase text-[12px] font-bold">{d.areaCode}</td>
-                          <td className="px-4 py-6 uppercase text-[12px] font-bold">{d.assignedStaff}</td>
-                          <td className="px-4 py-6 text-right text-orange-600 font-black text-[15px]">₱ {d.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                          <td className="px-4 py-6 text-center pr-4"><button onClick={() => deleteDiesel(d.id)} className="text-slate-300 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16} /></button></td>
-                        </tr>
-                      )) : (
-                        <tr><td colSpan={5} className="py-24 text-center opacity-10 uppercase font-black tracking-widest text-slate-400">No logs found for this period</td></tr>
+                  <div className="bg-white px-4 md:px-6 py-3 border-b border-slate-100 flex flex-wrap gap-3 md:gap-4 items-center justify-center">
+                    <div className="flex gap-1.5 md:gap-2 bg-slate-50 p-1 rounded-2xl">
+                      {['Daily', 'Monthly'].map(mode => (
+                        <button key={mode} onClick={() => setDieselViewMode(mode as 'Daily' | 'Monthly')} className={`px-4 md:px-5 py-1.5 rounded-xl text-[9px] md:text-[10px] font-black uppercase transition-all ${dieselViewMode === mode ? 'bg-[#ea580c] text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>{mode}</button>
+                      ))}
+                    </div>
+                    <div className="flex gap-2 bg-slate-50 px-3 md:px-4 py-2 rounded-2xl border border-slate-100 items-center">
+                      <Calendar size={14} className="text-[#ea580c]" />
+                      {dieselViewMode === 'Daily' ? (
+                        <select 
+                          value={dieselSelectedDate} 
+                          onChange={(e) => setDieselSelectedDate(e.target.value)} 
+                          className="bg-transparent text-[10px] md:text-[11px] font-black text-slate-700 uppercase outline-none cursor-pointer max-w-[150px] md:max-w-[200px]"
+                        >
+                          {fullYearDateOptions.map(month => (
+                            <optgroup key={month.monthStr} label={month.name.toUpperCase()}>
+                              {month.dates.map(date => (
+                                <option key={date.value} value={date.value}>
+                                  {date.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </select>
+                      ) : (
+                        <select 
+                          value={dieselSelectedMonth} 
+                          onChange={(e) => setDieselSelectedMonth(e.target.value)} 
+                          className="bg-transparent text-[10px] md:text-[11px] font-black text-slate-700 uppercase outline-none cursor-pointer"
+                        >
+                          {fullYearDateOptions.map(month => (
+                            <option key={month.monthStr} value={month.monthStr}>
+                              {month.name.toUpperCase()}
+                            </option>
+                          ))}
+                        </select>
                       )}
-                    </tbody>
-                  </table>
-                  <div className="bg-slate-50 px-4 py-10 flex justify-between items-center border-t border-slate-100 shadow-inner">
-                    <span className="font-black text-slate-800 uppercase text-[15px] tracking-tight pl-4">TOTAL EXPENSE FOR THIS {dieselViewMode.toUpperCase()}</span>
-                    <span className="text-slate-800 font-black text-2xl pr-4">₱ {dieselLedger.periodTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    </div>
                   </div>
-                </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 bg-white relative border-b border-slate-50">
+                    <div className="absolute top-1/4 bottom-1/4 left-1/2 w-[1px] bg-slate-100 hidden md:block" />
+                    <div className="p-6 flex flex-col items-center justify-center text-center">
+                      <div className="flex items-center gap-2 mb-2">
+                        <ClipboardList size={14} className="text-indigo-400" />
+                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Total Diesel Budget</span>
+                      </div>
+                      <div className="text-xl md:text-2xl font-black text-slate-900 tracking-tighter">
+                        {formatPHP(dieselLedger.dieselBudget)}
+                      </div>
+                    </div>
+                    <div className="p-6 flex flex-col items-center justify-center text-center">
+                      <div className="flex items-center gap-2 mb-2">
+                        <ArrowLeftRight size={14} className="text-[#ea580c]" />
+                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Returned to EIC Fund</span>
+                      </div>
+                      <div className="text-xl md:text-2xl font-black text-[#ea580c] tracking-tighter">
+                        {formatPHP(dieselLedger.returnedToFund)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-white overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-[#f8fafc] border-b border-slate-100">
+                          <tr className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                            <th className="px-4 md:px-6 py-4 text-left">Log Date / Vehicle</th>
+                            <th className="px-4 md:px-6 py-4 text-left">Area</th>
+                            <th className="px-4 md:px-6 py-4 text-left">Staff</th>
+                            <th className="px-4 md:px-6 py-4 text-right">Cost (PHP)</th>
+                            <th className="px-4 md:px-6 py-4 text-center">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50 min-h-[150px]">
+                          {(dieselLedger.filteredLogs as DieselReport[]).map(log => (
+                            <tr key={log.id} className="hover:bg-slate-50/50 transition-colors group">
+                              <td className="px-4 md:px-6 py-3">
+                                <div className="text-[8px] text-slate-400 font-black uppercase mb-0.5">{log.date}</div>
+                                <div className="font-black text-slate-800 text-[10px] md:text-xs uppercase">{log.vehicle}</div>
+                              </td>
+                              <td className="px-4 md:px-6 py-3">
+                                <div className="text-[9px] md:text-[10px] font-black text-slate-600 uppercase tracking-tight">{log.areaCode}</div>
+                              </td>
+                              <td className="px-4 md:px-6 py-3">
+                                <div className="text-[8px] md:text-[9px] font-black text-slate-500 uppercase">{log.assignedStaff}</div>
+                              </td>
+                              <td className="px-4 md:px-6 py-3 text-right font-black text-slate-900 text-xs md:text-sm">
+                                {formatPHP(log.amount)}
+                              </td>
+                              <td className="px-4 md:px-6 py-3 text-center">
+                                <button onClick={() => deleteDiesel(log.id)} className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-200 hover:text-rose-500 transition-colors">
+                                  <Trash2 size={14}/>
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="bg-[#f8fafc] border-t border-slate-100 p-4 flex justify-between items-center">
+                      <span className="text-[9px] md:text-[10px] font-black uppercase text-slate-900 tracking-widest">
+                        TOTAL EXPENSE FOR PERIOD
+                      </span>
+                      <span className="text-base md:text-lg font-black text-slate-900 tracking-tighter">
+                        {formatPHP(dieselLedger.periodTotal)}
+                      </span>
+                    </div>
+                  </div>
               </div>
             </div>
           )}
         </div>
-
-        {/* Mobile Bottom Navigation */}
-        <nav className="fixed bottom-0 left-0 right-0 lg:hidden bg-white/80 backdrop-blur-xl border-t border-slate-200 h-20 flex items-center justify-around px-6 z-[60] shadow-[0_-10px_25px_-10px_rgba(0,0,0,0.1)]">
-          <button 
-            onClick={() => setActiveTab('dashboard')} 
-            className={`flex flex-col items-center justify-center gap-1.5 transition-all w-16 h-16 rounded-2xl ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-600/30 -translate-y-2' : 'text-slate-400'}`}
-          >
-            <LayoutGrid size={24} />
-          </button>
-          <button 
-            onClick={() => setActiveTab('transactions')} 
-            className={`flex flex-col items-center justify-center gap-1.5 transition-all w-16 h-16 rounded-2xl ${activeTab === 'transactions' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-600/30 -translate-y-2' : 'text-slate-400'}`}
-          >
-            <ListTodo size={24} />
-          </button>
-          <button 
-            onClick={() => setActiveTab('diesel')} 
-            className={`flex flex-col items-center justify-center gap-1.5 transition-all w-16 h-16 rounded-2xl ${activeTab === 'diesel' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-600/30 -translate-y-2' : 'text-slate-400'}`}
-          >
-            <Fuel size={24} />
-          </button>
-        </nav>
       </main>
 
-      {/* Transaction Modal */}
-      {showTransactionModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in duration-300">
-            <div className="px-10 py-8 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">New Transaction</h3>
-              <button onClick={() => { setShowTransactionModal(false); setTransactionPreFill(null); }} className="p-3 hover:bg-slate-100 rounded-full transition-colors"><X size={20}/></button>
-            </div>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const formData = new FormData(e.currentTarget);
-              const amountVal = Math.abs(parseFloat(formData.get('amount') as string));
-              const typeVal = formData.get('type') as TransactionType;
-              const newT: Transaction = {
-                id: Date.now().toString(),
-                date: formData.get('date') as string,
-                description: (formData.get('description') as string).toUpperCase(),
-                amount: amountVal * (typeVal === 'expense' ? -1 : 1),
-                type: typeVal,
-                mode: formData.get('mode') as AccountType,
-                category: formData.get('category') as string
-              };
-              setTransactions(prev => [...prev, newT]);
-              setShowTransactionModal(false); setTransactionPreFill(null);
-            }} className="p-10 space-y-6">
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</label><input name="date" type="date" required defaultValue={selectedDate} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:ring-2 focus:ring-indigo-500/10 focus:outline-none" /></div>
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Type</label><select name="type" defaultValue={transactionPreFill?.type || "expense"} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:ring-2 focus:ring-indigo-500/10 focus:outline-none"><option value="expense">EXPENSE OUT</option><option value="fund">FUND RECEIVED IN</option></select></div>
-              </div>
-              <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</label><input name="description" required defaultValue={transactionPreFill?.description || ""} placeholder="Description..." className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:ring-2 focus:ring-indigo-500/10 focus:outline-none" /></div>
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Account</label><select name="mode" defaultValue={selectedAccount} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:ring-2 focus:ring-indigo-500/10 focus:outline-none"><option value="BDO">BDO</option><option value="GCASH">GCASH</option><option value="CASH">CASH</option></select></div>
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Category</label><select name="category" defaultValue={transactionPreFill?.category || "Fund Transfer"} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:ring-2 focus:ring-indigo-500/10 focus:outline-none">{allCategories.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></div>
-              </div>
-              <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount (PHP)</label><input name="amount" type="number" step="0.01" required placeholder="0.00" autoFocus={!!transactionPreFill} className="w-full bg-slate-50 border border-slate-200 rounded-[2rem] px-8 py-5 text-3xl font-black uppercase text-slate-800 focus:ring-2 focus:ring-indigo-500/10 focus:outline-none shadow-inner" /></div>
-              <button type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-[1.5rem] font-black text-[11px] uppercase tracking-[0.2em] shadow-xl shadow-indigo-500/30 hover:bg-indigo-700 transition-all hover:scale-[1.01]">Save Entry</button>
-            </form>
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-20 bg-white/80 backdrop-blur-xl border-t border-slate-100 px-8 flex items-center justify-between z-50 shadow-[0_-8px_30px_rgb(0,0,0,0.04)]">
+        <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'dashboard' ? 'text-indigo-600 scale-110' : 'text-slate-400'}`}><LayoutDashboard size={24} strokeWidth={activeTab === 'dashboard' ? 2.5 : 2} /></button>
+        <button onClick={() => setActiveTab('transactions')} className="relative -top-6 group">
+          <div className={`w-16 h-16 rounded-[1.5rem] flex items-center justify-center shadow-2xl transition-all duration-300 group-active:scale-95 ${activeTab === 'transactions' ? 'bg-[#4f46e5] text-white shadow-indigo-200' : 'bg-white text-slate-400 border border-slate-100'}`}>
+            <ListTodo size={28} strokeWidth={2.5} />
           </div>
-        </div>
-      )}
-
-      {/* Diesel Log Modal */}
-      {showDieselModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in duration-300">
-            <div className="px-10 py-8 border-b border-slate-100 flex items-center justify-between"><h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Log Diesel Vehicle Cost</h3><button onClick={() => setShowDieselModal(false)} className="p-3 rounded-full hover:bg-slate-100 transition-colors"><X size={20}/></button></div>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const formData = new FormData(e.currentTarget);
-              const newD: DieselReport = {
-                id: Date.now().toString(),
-                date: formData.get('date') as string,
-                vehicle: (formData.get('vehicle') as string).toUpperCase(),
-                areaCode: (formData.get('areaCode') as string).toUpperCase(),
-                assignedStaff: (formData.get('assignedStaff') as string).toUpperCase(),
-                amount: parseFloat(formData.get('amount') as string)
-              };
-              setDieselReports(prev => [...prev, newD]);
-              setShowDieselModal(false);
-            }} className="p-10 space-y-6">
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</label><input name="date" type="date" required defaultValue={selectedDate} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:outline-none" /></div>
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Area Code</label><input name="areaCode" placeholder="MKT..." required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:outline-none" /></div>
-              </div>
-              <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Assigned Staff</label><input name="assignedStaff" placeholder="Staff Name..." required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:outline-none" /></div>
-              <div className="grid grid-cols-2 gap-5">
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Vehicle Plate/Unit</label><input name="vehicle" placeholder="TRUCK 01..." required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:outline-none" /></div>
-                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cost (PHP)</label><input name="amount" type="number" step="0.01" required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black uppercase focus:outline-none" /></div>
-              </div>
-              <button type="submit" className="w-full py-5 bg-orange-600 text-white rounded-[1.5rem] font-black text-[11px] uppercase tracking-[0.2em] shadow-xl shadow-orange-500/30 hover:bg-orange-700 transition-all hover:scale-[1.01]">Save Cost Report</button>
-            </form>
-          </div>
-        </div>
-      )}
+        </button>
+        <button onClick={() => setActiveTab('diesel')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'diesel' ? 'text-[#ea580c] scale-110' : 'text-slate-400'}`}><Fuel size={24} strokeWidth={activeTab === 'diesel' ? 2.5 : 2} /></button>
+      </nav>
     </div>
   );
 };

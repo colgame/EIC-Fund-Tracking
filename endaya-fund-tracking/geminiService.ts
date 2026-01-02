@@ -2,19 +2,19 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Transaction, AIInsight } from "./types";
 
-// Always use the named parameter for apiKey and obtain it from process.env.API_KEY
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-// Using gemini-3-flash-preview for text analysis as it is optimized for reasoning and data processing
+// Using gemini-3-pro-preview for complex reasoning tasks like financial analysis and pattern recognition
 export const getFinancialInsights = async (transactions: Transaction[]): Promise<AIInsight[]> => {
   try {
+    // Initialize GoogleGenAI inside the function to ensure the latest API key is used
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    
     const summaryText = transactions.map(t => 
       `${t.date}: ${t.description} (${t.amount} PHP via ${t.mode})`
     ).join('\n');
 
-    // Use ai.models.generateContent to query the model directly
+    // Use gemini-3-pro-preview for its superior reasoning capabilities
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3-pro-preview',
       contents: `Analyze these financial transactions and provide 3 key insights. 
       Focus on spending patterns, potential savings, or unusual activities.
       Return the output as a JSON array of objects with 'title', 'content', and 'type' (must be 'tip', 'warning', or 'positive').
@@ -30,17 +30,28 @@ export const getFinancialInsights = async (transactions: Transaction[]): Promise
             properties: {
               title: { type: Type.STRING },
               content: { type: Type.STRING },
-              type: { type: Type.STRING }
+              type: { 
+                type: Type.STRING,
+                description: "The type of insight: 'tip', 'warning', or 'positive'"
+              }
             },
-            required: ['title', 'content', 'type']
+            required: ['title', 'content', 'type'],
+            propertyOrdering: ["title", "content", "type"]
           }
         }
       }
     });
 
-    // Access the text property directly (not as a method)
+    // Access the text property directly (it's a getter, not a method)
     const text = response.text;
-    return text ? JSON.parse(text) : [];
+    if (!text) return [];
+    
+    try {
+      return JSON.parse(text) as AIInsight[];
+    } catch (parseError) {
+      console.error("Failed to parse AI response:", parseError);
+      return [];
+    }
   } catch (error) {
     console.error("Error getting AI insights:", error);
     return [{
@@ -51,11 +62,13 @@ export const getFinancialInsights = async (transactions: Transaction[]): Promise
   }
 };
 
-// Using gemini-3-flash-preview for natural language parsing tasks
+// Using gemini-3-pro-preview for reliable extraction of structured data from natural language strings
 export const parseNaturalLanguageTransaction = async (input: string): Promise<Partial<Transaction> | null> => {
   try {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3-pro-preview',
       contents: `Parse this natural language financial transaction: "${input}"
       Extract: date (YYYY-MM-DD), description, amount (absolute number), type (income or expense), mode (BDO, GCash, or Cash), and category.
       If information is missing, use sensible defaults.
@@ -77,9 +90,15 @@ export const parseNaturalLanguageTransaction = async (input: string): Promise<Pa
       }
     });
 
-    // Access the text property directly
     const text = response.text;
-    return text ? JSON.parse(text) : null;
+    if (!text) return null;
+
+    try {
+      return JSON.parse(text) as Partial<Transaction>;
+    } catch (parseError) {
+      console.error("Failed to parse natural language transaction:", parseError);
+      return null;
+    }
   } catch (error) {
     console.error("Error parsing transaction:", error);
     return null;
